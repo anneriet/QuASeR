@@ -8,6 +8,9 @@ from scipy.optimize import minimize
 from qxelarator import qxelarator
 import matplotlib.pyplot as plt
 import re
+import os
+from openql import openql as ql
+THIS_FOLDER = os.path.dirname(os.path.abspath(__file__))
 
 ####################################################################################################
 ###################################################################################################
@@ -36,7 +39,7 @@ class QAOA(object):
                                  'ftol':1.0e-6, 'xtol':1.0e-6, 'disp':True, 'return_all':True}}
         # self.minimizer_kwargs = {'method':'Powell', 'options':{'maxiter':maxiter, 
         #                          'ftol':1.0e-6, 'xtol':1.0e-6, 'disp':True}}
-        self.p_name = "test_output/qaoa_run.qasm"
+        self.p_name = my_file = os.path.join(THIS_FOLDER, "test_output/qaoa_run.qasm") 
         self.expt = 0    
         self.probs = []
         self.optstep = 0
@@ -67,13 +70,18 @@ class QAOA(object):
         Adds measurments based on type of run
         '''
         def qasmify(params, wpp):
-
-            prog = open(self.p_name,"w")
-            prog.write("# De-parameterized QAOA ansatz\n")
-            prog.write("version 1.0\n")
-            prog.write("qubits "+str(n_qubits)+"\n")
-            prog.write(".qk(1)\n")
-            
+            # ql.set_option('log_level', 'LOG_DEBUG')
+            curdir = os.path.dirname(__file__)
+            output_dir = os.path.join(curdir, 'test_output')
+            ql.set_option('output_dir', output_dir)
+            config_fn = os.path.join(curdir, 'hardware_config_qx.json')
+            c = ql.Compiler("testCompiler")
+            c.add_pass_alias("Writer", "outputIR")
+            c.set_pass_option("outputIR", "write_qasm_files", "yes")
+            platf = ql.Platform("myPlatform", config_fn)
+            name = "qaoa_run"
+            p = ql.Program(name, platf, n_qubits)
+            k = ql.Kernel ("qk", platf, n_qubits)   
             # De-parameterize pqasm
             a_id = 0
             a_ctr = 0
@@ -81,7 +89,7 @@ class QAOA(object):
             for i in pqasm:
                 # 1-qubit parametric gates
                 if i[0] == 'rx' or i[0] == 'ry' or i[0] == 'rz':
-                    prog.write(i[0]+" q["+str(i[1])+"],"+str(coeffs[c_ctr]*params[a_id])+"\n")
+                    k.gate(i[0], [i[1]], 0, coeffs[c_ctr]*params[a_id])
                     c_ctr += 1
                     a_ctr += 1
                     if a_ctr >= ang_nos[a_id]:
@@ -89,27 +97,29 @@ class QAOA(object):
                         a_ctr = 0
                 # 1-qubit discrete gates
                 elif i[0] == 'x' or i[0] == 'y' or i[0] == 'z' or i[0] == 'h':
-                    prog.write(i[0]+" q["+str(i[1])+"]\n")
+                    k.gate(i[0], [i[1]])
                 # 2-qubit discrete gates
                 else:
-                    prog.write(i[0]+" q["+str(i[1][0])+"],q["+str(i[1][1])+"]\n")
+                    k.gate(i[0], i[1])
             
             # Pre-rotation for Z-basis measurement
             tgt = n_qubits-1
             for pt in wpp:
                 if pt == "X":
-                    prog.write("ry q"+str(tgt)+",1.5708\n")
+                    k.gate("ry", tgt, 0, 1.5708)
                 elif pt == "Y":
-                    prog.write("rx q"+str(tgt)+",-1.5708\n")
+                    k.gate("rx", tgt, 0, -1.5708)
                 # else Z or Identity
                 tgt -= 1
 
             # Measure all
             if shots > 0:
                 for i in range(n_qubits):
-                    prog.write("measure q["+str(i)+"]\n")
+                    k.measure(i)
 
-            prog.close()        
+            p.add_kernel(k)
+            
+            c.compile(p)            
 
         '''
         Access the internal state vector of QX to find the aggregate expectation value of each Pauli Product term in the Hamiltonian
